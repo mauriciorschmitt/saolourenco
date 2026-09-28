@@ -376,7 +376,8 @@ function render(){
     <h2>Indicadores</h2>
     <p class="intro">Cada valor é comparado à média histórica do mesmo mês.
       O escore indica quantos desvios-padrão a leitura se afasta do esperado.
-      Selecione uma linha para ver a série completa.</p>
+      Selecione uma linha para ver a série completa.
+      <a href="indicadores.html">O que cada índice significa</a>.</p>
     <table>
       <thead><tr>
         <th>Indicador</th><th>Últimos meses</th>
@@ -393,6 +394,7 @@ function render(){
   </section>
 
   <footer>
+    <a href="indicadores.html">Indicadores e série completa</a> ·
     Atualizado em ${new Date(resumo.atualizado_em).toLocaleString('pt-BR')}.
     Dados Sentinel-2 do programa Copernicus.
     <ul>${resumo.ressalvas.map(r=>`<li>${r}</li>`).join('')}</ul>
