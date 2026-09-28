@@ -42,25 +42,41 @@ class SentinelHubError(RuntimeError):
 # ── autenticação ───────────────────────────────────────────────────────────
 
 def get_token() -> str:
-    cid = os.environ.get("SH_CLIENT_ID")
-    secret = os.environ.get("SH_CLIENT_SECRET")
+    # strip() é essencial: colar credencial num campo de secret costuma
+    # arrastar espaço ou quebra de linha invisível, e o servidor rejeita o
+    # valor sem dizer por quê. Esta linha resolve a causa mais frequente
+    # de 401 em primeira configuração.
+    cid = (os.environ.get("SH_CLIENT_ID") or "").strip()
+    secret = (os.environ.get("SH_CLIENT_SECRET") or "").strip()
+
     if not cid or not secret:
         raise SentinelHubError(
             "Defina SH_CLIENT_ID e SH_CLIENT_SECRET. Em execução local use "
             "variáveis de ambiente; no GitHub Actions, secrets do repositório."
         )
+
     resp = requests.post(
         TOKEN_URL,
         data={"grant_type": "client_credentials",
               "client_id": cid, "client_secret": secret},
         timeout=60,
     )
-    if not resp.ok:
-        raise SentinelHubError(
-            f"Falha na autenticação ({resp.status_code}). "
-            "Verifique se o cliente OAuth ainda existe e não expirou."
-        )
-    return resp.json()["access_token"]
+    if resp.ok:
+        return resp.json()["access_token"]
+
+    # Diagnóstico sem vazar segredo: comprimento e formato do client_id,
+    # apenas o comprimento do secret, e a resposta do servidor.
+    detalhe = resp.text[:200].replace(secret, "***") if secret else resp.text[:200]
+    raise SentinelHubError(
+        f"Falha na autenticação (HTTP {resp.status_code}).\n"
+        f"  resposta do servidor: {detalhe}\n"
+        f"  SH_CLIENT_ID: {len(cid)} caracteres, "
+        f"formato UUID: {'sim' if len(cid) == 36 and cid.count('-') == 4 else 'NÃO'}\n"
+        f"  SH_CLIENT_SECRET: {len(secret)} caracteres\n"
+        "  O client_id do CDSE é um UUID (36 caracteres, 4 hífens). "
+        "Se o formato acima indicar NÃO, os dois valores podem ter sido "
+        "trocados entre si, ou o valor colado não é o do cliente OAuth."
+    )
 
 
 # ── geometria ──────────────────────────────────────────────────────────────
