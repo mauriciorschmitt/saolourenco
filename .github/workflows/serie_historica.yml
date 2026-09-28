@@ -32,6 +32,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # rebase precisa do histórico
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -51,6 +53,22 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add docs/data
-          git diff --cached --quiet || \
-            git commit -m "dados: reconstrói série histórica [skip ci]"
-          git push
+          if git diff --cached --quiet; then
+            echo "Nada mudou — nenhum commit necessário."
+            exit 0
+          fi
+          git commit -m "dados: reconstrói série histórica [skip ci]"
+          # O remoto pode ter avançado enquanto o processamento rodava (um
+          # upload pelo navegador, outro workflow). Rebase e tenta de novo,
+          # em vez de falhar e descartar o trabalho já feito.
+          for tentativa in 1 2 3 4 5; do
+            if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" \
+               && git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              echo "Publicado na tentativa $tentativa."
+              exit 0
+            fi
+            echo "Tentativa $tentativa falhou; aguardando..."
+            sleep $((tentativa * 5))
+          done
+          echo "::error::Não foi possível publicar após 5 tentativas."
+          exit 1
