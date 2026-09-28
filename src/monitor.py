@@ -220,6 +220,46 @@ def gravar(setor_id: str, registros: List[dict], cfg: dict) -> None:
         )
 
 
+def publicar_metadados(cfg: dict, setores: List[dict],
+                       series: Dict[str, List[dict]]) -> None:
+    """Escreve em docs/data/ o que a interface precisa além das séries:
+    os polígonos, para desenhar o contorno, e um resumo por setor."""
+    SAIDA.mkdir(parents=True, exist_ok=True)
+
+    feicoes = []
+    for setor in setores:
+        geom = carregar_geometria(setor["arquivo"])
+        feicoes.append({
+            "type": "Feature",
+            "properties": {"id": setor["id"], "nome": setor["nome"],
+                           "principal": bool(setor.get("principal"))},
+            "geometry": geom,
+        })
+    (SAIDA / "setores.geojson").write_text(
+        json.dumps({"type": "FeatureCollection", "features": feicoes},
+                   ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    resumo = {
+        "local": cfg["local"],
+        "atualizado_em": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "ressalvas": cfg["ressalvas"],
+        "indices": {k: {"nome": v["nome"], "descricao": v["descricao"],
+                        "alerta": bool(v.get("alerta"))}
+                    for k, v in cfg["indices"].items()},
+        "classificacoes": list(cfg["classificacao"].keys()),
+        "setores": [{"id": s["id"], "nome": s["nome"],
+                     "principal": bool(s.get("principal")),
+                     "observacoes": len(series.get(s["id"], []))}
+                    for s in setores],
+        "contrastes": [{"id": c["id"], "nome": c["nome"]}
+                       for c in (cfg.get("contrastes") or [])],
+    }
+    (SAIDA / "resumo.json").write_text(
+        json.dumps(resumo, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def ler_existente(setor_id: str) -> List[dict]:
     p = SAIDA / f"{setor_id}.csv"
     if not p.exists():
@@ -262,6 +302,8 @@ def main() -> int:
         analisar(cfg, completa)
         gravar(setor["id"], completa, cfg)
         series[setor["id"]] = completa
+
+    publicar_metadados(cfg, setores, series)
 
     for c in cfg.get("contrastes") or []:
         if c["a"] in series and c["b"] in series:
