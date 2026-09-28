@@ -55,8 +55,19 @@ p{max-width:70ch}
 .bandas{font-size:13px;color:var(--muted);margin:6px 0 0}
 .leitura-guia{font-size:14.5px;color:var(--muted);margin:10px 0 0}
 .mini{background:var(--panel);border:1px solid var(--line);padding:12px;
-      margin-top:14px}
-.mini svg{width:100%;height:auto;display:block}
+      margin-top:14px;position:relative}
+.mini svg{width:100%;height:auto;display:block;touch-action:pan-y}
+.dica-graf{font-size:12px;color:var(--muted);margin:8px 0 0}
+.tip{position:absolute;pointer-events:none;background:var(--ink);
+  color:var(--ground);font-size:12px;line-height:1.45;padding:7px 10px;
+  border-radius:3px;white-space:nowrap;opacity:0;transition:opacity .12s;
+  z-index:5;box-shadow:0 2px 8px rgba(0,0,0,.22)}
+.tip.on{opacity:1}
+.tip b{font-weight:600} .tip .fora{color:#FFC4B0}
+.legenda-graf{display:flex;flex-wrap:wrap;gap:16px;font-size:12px;
+  color:var(--muted);margin-top:10px}
+.legenda-graf span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:13px;height:9px;display:inline-block;border-radius:2px}
 
 /* filtros e tabela */
 .filtros{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;
@@ -72,7 +83,16 @@ button:hover{background:var(--water);color:var(--panel)}
 button:focus-visible,select:focus-visible,input:focus-visible{
   outline:2px solid var(--water);outline-offset:1px}
 .contagem{font-size:13px;color:var(--muted);margin:0 0 10px}
-.rolagem{overflow-x:auto;border:1px solid var(--line);background:var(--panel)}
+.rolagem{overflow-x:auto;border:1px solid var(--line);background:var(--panel);
+  /* sombra à direita enquanto houver conteúdo fora da vista */
+  background-image:linear-gradient(to right,var(--panel),var(--panel)),
+    linear-gradient(to left,rgba(18,48,58,.10),rgba(18,48,58,0));
+  background-position:right center,right center;background-repeat:no-repeat;
+  background-size:100% 100%,22px 100%;background-attachment:local,scroll}
+.dica-rolagem{font-size:12px;color:var(--muted);margin:8px 0 0}
+td:first-child,th:first-child{position:sticky;left:0;background:var(--panel);
+  z-index:2;box-shadow:1px 0 0 var(--line)}
+thead th:first-child{z-index:3}
 table{width:100%;border-collapse:collapse;font-size:13.5px}
 th{text-align:left;font-weight:500;font-size:12px;color:var(--muted);
    padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap;
@@ -166,34 +186,119 @@ async function tentar(a,t='json'){
   catch(e){return null;}
 }
 
-function serieSVG(linhas, k, W=940, H=170){
-  const pts=linhas.map(r=>({t:r.data,v:num(r[k]),c:r.confianca}))
+// Climatologia mensal a partir das passagens confiáveis do período de
+// referência. É ela que define a faixa esperada de cada mês — a "sombra"
+// contra a qual se enxerga o que está fora do padrão.
+function climatologia(linhas, k){
+  const b={};
+  linhas.forEach(r=>{
+    if(r.confianca!=='ALTA' || r.data>'2024-12-31') return;
+    const v=num(r[k]); if(v===null) return;
+    (b[+r.data.slice(5,7)]=b[+r.data.slice(5,7)]||[]).push(v);
+  });
+  const o={};
+  for(const m in b){ const vs=b[m]; if(vs.length<2) continue;
+    const mu=vs.reduce((a,c)=>a+c,0)/vs.length;
+    const dp=Math.sqrt(vs.reduce((a,c)=>a+(c-mu)**2,0)/(vs.length-1));
+    o[m]={mu,dp,n:vs.length}; }
+  return o;
+}
+
+const CORCONF={ALTA:'var(--water)',MEDIA:'var(--silt)',BAIXA:'var(--alert)'};
+
+function montarGrafico(box, linhas, k){
+  const W=940,H=200,ml=48,mr=12,mt=12,mb=26;
+  const clim=climatologia(linhas,k);
+  const pts=linhas.map(r=>({t:r.data,v:num(r[k]),c:r.confianca||'BAIXA',
+                            z:num(r[k+'_z']),m:+r.data.slice(5,7)}))
                   .filter(p=>p.v!==null);
-  if(pts.length<2) return '<p class="sub">Sem dados suficientes.</p>';
-  const ml=46,mr=10,mt=10,mb=22;
-  const t0=+new Date(pts[0].t),t1=+new Date(pts[pts.length-1].t);
-  const vs=pts.map(p=>p.v); let lo=Math.min(...vs),hi=Math.max(...vs);
-  const f=(hi-lo)*.1||.05; lo-=f; hi+=f;
+  if(pts.length<2){ box.innerHTML='<p class="sub">Sem dados suficientes.</p>'; return; }
+
+  const t0=+new Date(pts[0].t), t1=+new Date(pts[pts.length-1].t);
+  const comB=pts.filter(p=>clim[p.m]);
+  const todos=pts.map(p=>p.v)
+    .concat(comB.map(p=>clim[p.m].mu+2*clim[p.m].dp),
+            comB.map(p=>clim[p.m].mu-2*clim[p.m].dp));
+  let lo=Math.min(...todos),hi=Math.max(...todos);
+  const f=(hi-lo)*.08||.05; lo-=f; hi+=f;
   const X=t=>ml+((+new Date(t)-t0)/(t1-t0||1))*(W-ml-mr);
   const Y=v=>mt+(1-(v-lo)/(hi-lo))*(H-mt-mb);
-  const d=pts.map((p,i)=>(i?'L':'M')+X(p.t).toFixed(1)+' '+Y(p.v).toFixed(1)).join(' ');
-  const zero=(lo<0&&hi>0)?`<line x1="${ml}" x2="${W-mr}" y1="${Y(0).toFixed(1)}"
-    y2="${Y(0).toFixed(1)}" stroke="var(--muted)" stroke-dasharray="3 3"
-    stroke-width="1" opacity=".5"/>`:'';
-  const marcas=pts.filter(p=>p.c==='ALTA').map(p=>
-    `<circle cx="${X(p.t).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="1.7"
-      fill="var(--water)" opacity=".8"><title>${p.t} · ${fmt(p.v)}</title></circle>`).join('');
+
+  let faixa='';
+  if(comB.length>1){
+    const sup=comB.map(p=>`${X(p.t).toFixed(1)},${Y(clim[p.m].mu+2*clim[p.m].dp).toFixed(1)}`);
+    const inf=comB.slice().reverse()
+      .map(p=>`${X(p.t).toFixed(1)},${Y(clim[p.m].mu-2*clim[p.m].dp).toFixed(1)}`);
+    faixa=`<polygon points="${sup.concat(inf).join(' ')}" fill="var(--band)" opacity=".55"/>`;
+  }
+
+  const fora=p=>{const c=clim[p.m]; return c ? Math.abs(p.v-c.mu)>2*c.dp : false;};
+  const linha=pts.map((p,i)=>(i?'L':'M')+X(p.t).toFixed(1)+' '+Y(p.v).toFixed(1)).join(' ');
+  const marcas=pts.map((p,i)=>{
+    const f2=fora(p);
+    return `<circle data-i="${i}" cx="${X(p.t).toFixed(1)}" cy="${Y(p.v).toFixed(1)}"
+      r="${f2?3:1.9}" fill="${f2?'var(--alert)':CORCONF[p.c]}"
+      opacity="${p.c==='BAIXA'?.5:.9}"
+      ${f2?'stroke="var(--alert)" stroke-width="1" stroke-opacity=".35"':''}/>`;
+  }).join('');
+  const eixoY=[hi,(hi+lo)/2,lo].map(v=>
+    `<line x1="${ml}" x2="${W-mr}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}"
+       stroke="var(--line)"/>
+     <text x="${ml-6}" y="${(Y(v)+4).toFixed(1)}" text-anchor="end" font-size="10"
+       fill="var(--muted)">${fmt(v,2)}</text>`).join('');
   const anos=[...new Set(pts.map(p=>p.t.slice(0,4)))];
-  const tx=anos.map(a=>{const p=pts.find(q=>q.t.slice(0,4)===a);
+  const eixoX=anos.map(a=>{const p=pts.find(q=>q.t.slice(0,4)===a);
     return `<text x="${X(p.t).toFixed(1)}" y="${H-6}" text-anchor="middle"
       font-size="10" fill="var(--muted)">${a}</text>`;}).join('');
-  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Série de ${k}">
-    <line x1="${ml}" x2="${W-mr}" y1="${Y(hi).toFixed(1)}" y2="${Y(hi).toFixed(1)}" stroke="var(--line)"/>
-    <line x1="${ml}" x2="${W-mr}" y1="${Y(lo).toFixed(1)}" y2="${Y(lo).toFixed(1)}" stroke="var(--line)"/>
-    <text x="${ml-6}" y="${(Y(hi)+4).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)">${fmt(hi,2)}</text>
-    <text x="${ml-6}" y="${(Y(lo)+4).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)">${fmt(lo,2)}</text>
-    ${zero}<path d="${d}" fill="none" stroke="var(--ink)" stroke-width="1.1" opacity=".5"/>
-    ${marcas}${tx}</svg>`;
+
+  box.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img"
+      aria-label="Série de ${k} com faixa esperada">
+    ${eixoY}${faixa}
+    <path d="${linha}" fill="none" stroke="var(--ink)" stroke-width="1.1" opacity=".45"/>
+    ${marcas}${eixoX}
+    <line class="cursor" x1="0" x2="0" y1="${mt}" y2="${H-mb}"
+      stroke="var(--ink)" stroke-width="1" opacity="0" stroke-dasharray="2 3"/>
+    <circle class="foco" r="4.5" fill="none" stroke="var(--ink)"
+      stroke-width="1.6" opacity="0"/>
+  </svg>
+  <div class="tip"></div>
+  <div class="legenda-graf">
+    <span><i class="sw" style="background:var(--band)"></i>faixa esperada do mês (±2 desvios)</span>
+    <span><i class="sw" style="background:var(--alert)"></i>fora da faixa</span>
+    <span><i class="sw" style="background:var(--water)"></i>confiável</span>
+    <span><i class="sw" style="background:var(--silt)"></i>parcial</span>
+  </div>
+  <p class="dica-graf">Passe o cursor sobre o gráfico para ver cada passagem.</p>`;
+
+  const svg=box.querySelector('svg'), tip=box.querySelector('.tip');
+  const cur=svg.querySelector('.cursor'), foco=svg.querySelector('.foco');
+
+  function mover(ev){
+    const r=svg.getBoundingClientRect();
+    const cx=(ev.touches?ev.touches[0].clientX:ev.clientX);
+    const xv=((cx-r.left)/r.width)*W;
+    let melhor=0,dist=Infinity;
+    pts.forEach((p,i)=>{const d=Math.abs(X(p.t)-xv); if(d<dist){dist=d;melhor=i;}});
+    const p=pts[melhor], px=X(p.t), py=Y(p.v), f2=fora(p);
+    cur.setAttribute('x1',px); cur.setAttribute('x2',px); cur.setAttribute('opacity','.35');
+    foco.setAttribute('cx',px); foco.setAttribute('cy',py); foco.setAttribute('opacity','.9');
+    tip.innerHTML=`<b>${new Date(p.t+'T12:00:00').toLocaleDateString('pt-BR')}</b><br>
+      valor ${fmt(p.v)}${p.z!==null?` · escore ${p.z>0?'+':''}${fmt(p.z,1)}`:''}<br>
+      leitura ${p.c.toLowerCase()}${f2?'<br><span class="fora">fora da faixa esperada</span>':''}`;
+    const bx=box.getBoundingClientRect();
+    const left=(px/W)*r.width + (r.left-bx.left);
+    tip.style.left=Math.min(Math.max(left+12,4), bx.width-tip.offsetWidth-4)+'px';
+    tip.style.top=((py/H)*r.height + (r.top-bx.top) - tip.offsetHeight - 10)+'px';
+    tip.classList.add('on');
+  }
+  function sair(){ tip.classList.remove('on');
+    cur.setAttribute('opacity','0'); foco.setAttribute('opacity','0'); }
+
+  svg.addEventListener('mousemove',mover);
+  svg.addEventListener('mouseleave',sair);
+  svg.addEventListener('touchstart',mover,{passive:true});
+  svg.addEventListener('touchmove',mover,{passive:true});
+  svg.addEventListener('touchend',sair);
 }
 
 let LINHAS=[], COLS=[], VISIVEIS=100, ORD={col:'data',dir:-1};
@@ -210,8 +315,12 @@ function filtrar(){
     return true;
   }).sort((a,b)=>{
     const x=a[ORD.col]??'', y=b[ORD.col]??'';
-    const nx=parseFloat(x), ny=parseFloat(y);
-    const cmp=(Number.isFinite(nx)&&Number.isFinite(ny))?nx-ny:String(x).localeCompare(String(y));
+    // parseFloat('2026-01-03') devolve 2026: datas precisam ser comparadas
+    // como texto, senão a ordenação enxerga só o ano.
+    const numerico = v=>/^-?\d+([.,]\d+)?$/.test(String(v).trim());
+    const cmp = (numerico(x)&&numerico(y))
+      ? parseFloat(String(x).replace(',','.'))-parseFloat(String(y).replace(',','.'))
+      : String(x).localeCompare(String(y),'pt-BR');
     return cmp*ORD.dir;
   });
 }
@@ -318,7 +427,7 @@ function exportar(){
       <p>${GUIA[k].mede}</p>
       <p class="leitura-guia"><strong>Como ler:</strong> ${GUIA[k].ler}</p>
       <p class="leitura-guia"><strong>Cuidado:</strong> ${GUIA[k].cuidado}</p>
-      <div class="mini">${serieSVG(LINHAS,k)}</div>
+      <div class="mini" data-graf="${k}"></div>
     </div>`).join('')}
 
   <h2>Série completa</h2>
@@ -340,6 +449,8 @@ function exportar(){
   </div>
   <p class="contagem" id="contagem"></p>
   <div class="rolagem"><table id="tabela"></table></div>
+  <p class="dica-rolagem">A tabela rola na horizontal: há mais colunas à
+    direita. A coluna de data fica fixa.</p>
   <button class="mais" id="mais">Mostrar mais 100</button>
 
   <footer>
@@ -356,6 +467,8 @@ function exportar(){
 
   ['f-ano','f-conf','f-sit'].forEach(id=>
     document.getElementById(id).onchange=()=>{VISIVEIS=100;tabela();});
+  document.querySelectorAll('[data-graf]').forEach(box=>
+    montarGrafico(box, LINHAS, box.dataset.graf));
   document.getElementById('btn-csv').onclick=exportar;
   document.getElementById('mais').onclick=()=>{VISIVEIS+=100;tabela();};
   tabela();
