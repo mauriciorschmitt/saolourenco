@@ -97,26 +97,56 @@ def centroide(geom: dict) -> tuple:
     return sum(xs) / len(xs), sum(ys) / len(ys)
 
 
-def reprojetar_utm(geom: dict) -> tuple:
-    """Converte um Polygon em WGS84 para a zona UTM correspondente.
+def reprojetar_utm(geom: dict, recuo_m: float = 0.0) -> tuple:
+    """Converte um Polygon em WGS84 para a zona UTM correspondente, aplicando
+    opcionalmente um recuo para dentro.
 
     A API interpreta resx/resy na unidade do CRS declarado. Enviar a
     geometria em graus e pedir resolução 10 produziria pixels de 10 GRAUS —
     daí a reprojeção ser obrigatória, e não um refinamento.
+
+    O recuo remove o anel de pixels que cavalga a linha d'água. Num pixel de
+    10 m, um recuo de 10 m descarta exatamente a faixa em que água e margem
+    se misturam dentro do mesmo pixel, onde vegetação ripária contamina o
+    índice sem que nada tenha acontecido na lâmina.
+
+    Recuos maiores desconectam braços estreitos e fragmentam o polígono; a
+    função aceita o resultado como MultiPolygon, mas avisa no log.
     """
     from pyproj import Transformer
+    from shapely.geometry import shape, mapping, MultiPolygon
+    from shapely.ops import transform as sh_transform
 
     lon, lat = centroide(geom)
     epsg = utm_epsg(lon, lat)
     tr = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
 
-    def anel(coords):
-        return [list(tr.transform(x, y)) for x, y in coords]
+    g = sh_transform(lambda x, y, z=None: tr.transform(x, y), shape(geom))
+    if not g.is_valid:
+        g = g.buffer(0)
+    area_ini = g.area
 
-    return (
-        {"type": "Polygon", "coordinates": [anel(r) for r in geom["coordinates"]]},
-        epsg,
-    )
+    if recuo_m and recuo_m > 0:
+        g = g.buffer(-abs(recuo_m))
+        if g.is_empty:
+            raise SentinelHubError(
+                f"O recuo de {recuo_m} m eliminou o polígono inteiro. "
+                "Reduza aquisicao.recuo_borda_m em config.yaml."
+            )
+        partes = len(g.geoms) if isinstance(g, MultiPolygon) else 1
+        log.info(
+            "  recuo de %g m: %.2f ha -> %.2f ha (-%.0f%%), %d parte(s)",
+            recuo_m, area_ini / 10_000, g.area / 10_000,
+            (1 - g.area / area_ini) * 100, partes,
+        )
+        if partes > 1:
+            log.warning(
+                "  o recuo fragmentou o polígono em %d partes: braços "
+                "estreitos se desconectaram. Se não for intencional, use um "
+                "recuo menor.", partes
+            )
+
+    return mapping(g), epsg
 
 
 def area_pixel_ha(resolucao_m: int) -> float:
@@ -149,13 +179,14 @@ def _post_com_retry(url: str, headers: dict, payload: dict) -> dict:
 
 def consultar(token: str, geometria: dict, evalscript: str,
               inicio: dt.date, fim: dt.date, saidas: Iterable[str],
-              colecao: str = "sentinel-2-l2a", resolucao: int = 10) -> List[dict]:
+              colecao: str = "sentinel-2-l2a", resolucao: int = 10,
+              recuo_m: float = 0.0) -> List[dict]:
     """Uma requisição estatística para um polígono e um intervalo de datas.
 
     Retorna a lista bruta de intervalos devolvida pela API, um por data com
     observação disponível.
     """
-    geom_utm, epsg = reprojetar_utm(geometria)
+    geom_utm, epsg = reprojetar_utm(geometria, recuo_m)
 
     calculos = {s: {"statistics": {"default": {}}} for s in saidas}
 
