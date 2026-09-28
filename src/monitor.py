@@ -98,7 +98,8 @@ def coletar_setor(token: str, cfg: dict, setor: dict,
         log.info("  %s: %s a %s", setor["id"], ini, fi)
         try:
             bruto = sh.consultar(token, geom, evalscript, ini, fi, saidas,
-                                 aq["colecao"], aq["resolucao_m"])
+                                 aq["colecao"], aq["resolucao_m"],
+                                 aq.get("recuo_borda_m", 0))
         except sh.SentinelHubError as exc:
             # Um bloco ruim não deve interromper dez anos de série.
             log.warning("    bloco falhou: %s", exc)
