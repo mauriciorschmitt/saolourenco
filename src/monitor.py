@@ -82,7 +82,11 @@ def coletar_setor(token: str, cfg: dict, setor: dict,
 
     indices = list(ind_cfg.keys())
     evalscript = evalscripts.render(indices, classif, qual["scl_descartadas"])
-    saidas = indices + [f"cls_{n}" for n in classif] + ["dataMask"]
+    # dataMask NÃO entra em calculations: ele define quais pixels contam,
+    # não é uma grandeza a resumir. Pedir estatística dele faz a API recusar
+    # a requisição inteira — e como a falha é por bloco, o resultado é um
+    # CSV vazio sem erro aparente.
+    saidas = indices + [f"cls_{n}" for n in classif]
 
     geom = carregar_geometria(setor["arquivo"])
     area_px = sh.area_pixel_ha(aq["resolucao_m"])
@@ -108,20 +112,20 @@ def coletar_setor(token: str, cfg: dict, setor: dict,
             amostras = ndvi_stats.get("sampleCount", 0)
             if amostras <= 0:
                 continue
+            # sampleCount conta os pixels do retângulo envolvente, não os do
+            # polígono. Num reservatório estreito e alongado o retângulo é
+            # várias vezes maior que a área monitorada, então dividir por ele
+            # subestimaria a cobertura de forma grosseira — e nenhuma cena
+            # jamais seria classificada como confiável. A fração é calculada
+            # depois, contra a maior contagem já observada na série.
             validos = amostras - ndvi_stats.get("noDataCount", 0)
-            fracao = validos / amostras if amostras else 0.0
-            if fracao < qual["fracao_minima_ingestao"]:
+            if validos <= 0:
                 continue
 
             data = item["interval"]["from"][:10]
             reg: Dict[str, object] = {
                 "data": data,
                 "pixels_validos": validos,
-                "fracao_valida": round(fracao, 4),
-                "nuvem_pct": round((1 - fracao) * 100, 1),
-                "confianca": confianca(fracao,
-                                       qual["fracao_confianca_media"],
-                                       qual["fracao_confianca_alta"]),
             }
             for nome in indices:
                 st = sh.extrair(item, nome)
@@ -137,6 +141,9 @@ def coletar_setor(token: str, cfg: dict, setor: dict,
                     reg[f"frac_{nome}"] = None
                 else:
                     reg[f"frac_{nome}"] = round(frac, 4)
+                    # frac é a proporção dos pixels VÁLIDOS que cruzam o
+                    # limiar; multiplicada pela contagem e pela área do pixel,
+                    # dá hectares diretamente.
                     reg[f"area_{nome}_ha"] = round(frac * validos * area_px, 2)
             registros.append(reg)
 
@@ -149,6 +156,39 @@ def coletar_setor(token: str, cfg: dict, setor: dict,
 
 
 # ── análise ────────────────────────────────────────────────────────────────
+
+def calibrar_cobertura(cfg: dict, registros: List[dict]) -> int:
+    """Define a fração observada de cada cena e o rótulo de confiança.
+
+    A referência é a maior contagem de pixels válidos já registrada na série
+    — na prática, uma passagem de céu limpo sobre o reservatório inteiro.
+    Isso dispensa constante fixa e se autocalibra: trocar o polígono ou a
+    resolução ajusta a referência sozinho, sem editar código.
+    """
+    qual = cfg["qualidade"]
+    validos = [int(r["pixels_validos"]) for r in registros
+               if str(r.get("pixels_validos", "")).strip().isdigit()]
+    ref = max(validos) if validos else 1
+
+    descartados = 0
+    for r in list(registros):
+        try:
+            v = int(r["pixels_validos"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        f = v / ref
+        if f < qual["fracao_minima_ingestao"]:
+            registros.remove(r)
+            descartados += 1
+            continue
+        r["fracao_valida"] = round(f, 4)
+        r["nuvem_pct"] = round((1 - f) * 100, 1)
+        r["confianca"] = confianca(f, qual["fracao_confianca_media"],
+                                   qual["fracao_confianca_alta"])
+    log.info("  cobertura de referência: %d pixels válidos%s",
+             ref, f" | {descartados} cena(s) descartada(s)" if descartados else "")
+    return ref
+
 
 def analisar(cfg: dict, registros: List[dict]) -> List[dict]:
     clim_cfg = cfg["climatologia"]
@@ -296,9 +336,20 @@ def main() -> int:
     for setor in setores:
         log.info("Setor %s", setor["id"])
         novos = coletar_setor(token, cfg, setor, inicio, fim)
+        anteriores = ler_existente(setor["id"])
         if not novos:
-            log.warning("  nenhuma observação válida no período")
-        completa = mesclar(ler_existente(setor["id"]), novos)
+            if not anteriores:
+                # Falhar alto: gravar um CSV vazio e seguir em frente faz o
+                # problema parecer resolvido quando não está.
+                log.error(
+                    "  Nenhuma observação obtida e não há série anterior. "
+                    "Verifique acima se algum bloco foi recusado pela API — "
+                    "erro 400 costuma indicar evalscript ou payload inválido."
+                )
+                return 2
+            log.warning("  nenhuma observação nova no período; série mantida")
+        completa = mesclar(anteriores, novos)
+        calibrar_cobertura(cfg, completa)
         analisar(cfg, completa)
         gravar(setor["id"], completa, cfg)
         series[setor["id"]] = completa
