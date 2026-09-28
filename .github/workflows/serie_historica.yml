@@ -1,0 +1,56 @@
+name: Construir série histórica (manual)
+
+# Operação pesada e pontual: reconstrói a série completa desde 2016.
+# Não roda por agenda. Use após alterar setores, índices ou limiares.
+
+on:
+  workflow_dispatch:
+    inputs:
+      desde:
+        description: "Data inicial (AAAA-MM-DD)"
+        required: false
+        default: "2016-07-19"
+      ate:
+        description: "Data final — em branco usa hoje"
+        required: false
+        default: ""
+      setor:
+        description: "Setor específico — em branco processa todos"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: monitoramento
+  cancel-in-progress: false
+
+jobs:
+  construir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Reconstruir série
+        env:
+          SH_CLIENT_ID:     ${{ secrets.SH_CLIENT_ID }}
+          SH_CLIENT_SECRET: ${{ secrets.SH_CLIENT_SECRET }}
+        run: |
+          ARGS="--desde ${{ inputs.desde }}"
+          [ -n "${{ inputs.ate }}" ]   && ARGS="$ARGS --ate ${{ inputs.ate }}"
+          [ -n "${{ inputs.setor }}" ] && ARGS="$ARGS --setor ${{ inputs.setor }}"
+          python -m src.monitor $ARGS
+      - name: Publicar séries
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/data
+          git diff --cached --quiet || \
+            git commit -m "dados: reconstrói série histórica [skip ci]"
+          git push
