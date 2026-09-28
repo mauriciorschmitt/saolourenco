@@ -15,6 +15,15 @@ local:
 aquisicao:
   colecao: "sentinel-2-l2a"
   resolucao_m: 10          # B05 e B11 são reamostradas de 20 m pela API
+
+  # Recuo para dentro do polígono, em metros, antes do processamento.
+  # Descarta o anel de pixels que mistura água e margem — onde vegetação
+  # ripária eleva os índices sem que nada tenha ocorrido na lâmina d'água.
+  # Para a Represa São Lourenço: 0 m = 79,49 ha; 10 m = 65,10 ha (um pixel,
+  # polígono íntegro); a partir de 15 m os braços estreitos se desconectam.
+  # ATENÇÃO: alterar este valor muda o que é medido. Reconstrua a série
+  # inteira depois de mexer, ou o histórico fica incomparável com o presente.
+  recuo_borda_m: 10
   janela_dias: 30          # busca retroativa a cada execução
   serie_inicio: "2016-07-19"
   chunk_dias: 90           # tamanho do bloco no backfill
