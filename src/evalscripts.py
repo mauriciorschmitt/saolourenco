@@ -26,7 +26,9 @@ from typing import Dict, List
 WL_RED, WL_NIR, WL_SWIR = 665.0, 842.0, 1610.0
 FAI_SLOPE = (WL_NIR - WL_RED) / (WL_SWIR - WL_RED)  # ≈ 0.1873
 
-BANDAS = ["B02", "B03", "B04", "B05", "B08", "B11", "SCL", "dataMask"]
+# B02 fica de fora: nenhuma fórmula atual a usa, e cada banda pedida
+# consome unidades de processamento da cota gratuita.
+BANDAS = ["B03", "B04", "B05", "B08", "B11", "SCL", "dataMask"]
 
 # Índices contínuos. Cada entrada vira uma saída da API.
 # EPS evita divisão por zero quando ambas as bandas são nulas.
@@ -89,12 +91,11 @@ const SCL_DESCARTADAS = SCL_LISTA;
 
 function setup() {{
   return {{
-    input: [{{ bands: {BANDAS}, units: "REFLECTANCE" }}],
+    input: [{{ bands: {BANDAS} }}],
     output: [
 {chr(10).join(s + "," for s in saidas[:-1])}
 {saidas[-1]}
-    ],
-    mosaicking: "ORBIT"
+    ]
   }};
 }}
 
