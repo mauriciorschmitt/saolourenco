@@ -33,7 +33,7 @@ h1{font-family:var(--serif);font-weight:400;font-size:clamp(28px,5vw,40px);
 .sub{color:var(--muted);font-size:14px;margin:0}
 
 /* estado atual */
-.estado{display:grid;grid-template-columns:auto 1fr;gap:44px;
+.estado{display:grid;grid-template-columns:auto minmax(0,1fr);gap:44px;
         align-items:start;margin-bottom:44px}
 @media (max-width:720px){.estado{grid-template-columns:1fr;gap:24px}}
 .mapa svg{height:auto;display:block;max-width:100%}
@@ -132,6 +132,45 @@ async function buscar(arq, tipo='json'){
   const r = await fetch(DADOS+arq, {cache:'no-store'});
   if(!r.ok) throw new Error(arq+' → HTTP '+r.status);
   return tipo==='json' ? r.json() : r.text();
+}
+
+async function tentar(arq, tipo='json'){
+  try{ return await buscar(arq, tipo); }catch(e){ return null; }
+}
+
+// Metadados derivados do próprio CSV. Permite que a página funcione mesmo
+// antes de o monitor publicar resumo.json — útil na primeira configuração.
+const ROTULOS = {
+  ndvi:['Vegetação (NDVI)','Vegetação fotossintética; sobre água indica cobertura flutuante',1],
+  fai:['Algas flutuantes (FAI)','Índice de linha de base; mais robusto que NDVI a aerossol',1],
+  ndci:['Clorofila relativa (NDCI)','Red-edge; proxy de biomassa fitoplanctônica e eutrofização',1],
+  ndti:['Turbidez relativa (NDTI)','Razão vermelho-verde; proxy de sedimento em suspensão',1],
+  cdom:['Matéria orgânica dissolvida','Razão verde/vermelho; indicativo, alta incerteza em água interior',0],
+  ndwi:['Água (NDWI)','Delimitação da lâmina d\u2019água',0],
+  ndmi:['Umidade (NDMI)','Discrimina vegetação úmida de substrato exposto',0],
+};
+
+function resumoDoCSV(linhas, setorId){
+  const cols = Object.keys(linhas[0]);
+  const indices = {};
+  for(const k in ROTULOS){
+    if(cols.includes(k)){
+      indices[k] = {nome:ROTULOS[k][0], descricao:ROTULOS[k][1],
+                    alerta: !!ROTULOS[k][2] && cols.includes(k+'_status')};
+    }
+  }
+  return {
+    local:{nome:'Represa São Lourenço', municipio:'Mafra', uf:'SC'},
+    atualizado_em:new Date().toISOString(),
+    ressalvas:[
+      'Os índices são relativos e expressos como anomalia frente ao histórico. Sem amostragem de campo, não correspondem a concentrações.',
+      'A correção atmosférica utilizada é destinada a superfícies terrestres e introduz incerteza adicional sobre água.',
+      'O sistema detecta alteração espectral. Não identifica espécie, substância ou origem de lançamento.',
+      'Alertas são triagem e indicam necessidade de verificação independente.'],
+    indices,
+    setores:[{id:setorId, nome:'Represa', principal:true, observacoes:linhas.length}],
+    contrastes:[], _derivado:true
+  };
 }
 
 // ── climatologia recalculada no cliente, para desenhar a faixa ─────────────
@@ -325,7 +364,7 @@ function render(){
   </header>
 
   <section class="estado">
-    <div class="mapa">${silhueta(geo, estreito()?150:240, estreito()?230:380)}</div>
+    ${geo ? `<div class="mapa">${silhueta(geo, estreito()?150:240, estreito()?230:380)}</div>` : ''}
     <div class="leituras">
       <span class="selo c-${conf}"><i></i>${nomeConf}</span>
       <div style="display:flex;gap:40px;flex-wrap:wrap">${areas}</div>
@@ -377,25 +416,45 @@ window.addEventListener('resize', ()=>{
 (async function(){
   const app = document.getElementById('app');
   try{
-    const resumo = await buscar('resumo.json');
-    const principal = (resumo.setores.find(s=>s.principal) || resumo.setores[0]);
-    if(!principal) throw new Error('Nenhum setor configurado.');
-    const [csv, geo] = await Promise.all([
-      buscar(principal.id+'.csv','texto'),
-      buscar('setores.geojson'),
-    ]);
+    let resumo = await tentar('resumo.json');
+    const setorId = resumo && (resumo.setores.find(s=>s.principal)
+                    || resumo.setores[0] || {}).id || 'represa';
+
+    const csv = await tentar(setorId+'.csv','texto');
+    if(!csv) throw new Error(
+      'Não encontrei data/'+setorId+'.csv. Rode o fluxo "Construir série '+
+      'histórica" na aba Actions — é ele que gera a série.');
+
     const linhas = parseCSV(csv).filter(r=>r.data);
-    if(!linhas.length) throw new Error('A série está vazia.');
-    ESTADO = {linhas, resumo, geo,
-              indice: Object.keys(resumo.indices)[0]};
+    if(!linhas.length) throw new Error('O arquivo data/'+setorId+
+      '.csv existe mas está sem linhas de dados.');
+
+    // Sem resumo.json a página se vira com o que há no CSV.
+    if(!resumo) resumo = resumoDoCSV(linhas, setorId);
+
+    const geo = await tentar('setores.geojson');   // silhueta é opcional
+
+    ESTADO = {linhas, resumo, geo, indice: Object.keys(resumo.indices)[0]};
+    if(!ESTADO.indice) throw new Error(
+      'O CSV não tem nenhuma coluna de índice reconhecida.');
     render();
+    if(resumo._derivado || !geo){
+      const f = [];
+      if(resumo._derivado) f.push('resumo.json');
+      if(!geo) f.push('setores.geojson');
+      document.querySelector('footer').insertAdjacentHTML('beforeend',
+        `<p class="aviso" style="margin-top:14px">Exibindo com informação
+         reduzida: ${f.join(' e ')} não foi encontrado. Suba a versão
+         atualizada de <code>src/monitor.py</code> e rode o monitoramento
+         novamente para o painel ficar completo.</p>`);
+    }
   }catch(e){
     app.innerHTML = `<div class="erro"><strong>Não foi possível carregar os
-      dados.</strong><br>${e.message}<br><br>
-      Rode o fluxo <code>Construir série histórica</code> na aba Actions para
-      gerar os arquivos em <code>docs/data/</code>. Abrir este arquivo direto
-      do disco também falha: o navegador bloqueia leitura local, use a página
-      publicada no GitHub Pages.</div>`;
+      dados.</strong><br><br>${e.message}<br><br>
+      Verifique, pelo GitHub, se a pasta <code>docs/data/</code> contém os
+      arquivos gerados pelo monitoramento. Abrir este arquivo direto do disco
+      também falha — o navegador bloqueia leitura local, use o endereço
+      publicado.</div>`;
   }
 })();
 </script>
