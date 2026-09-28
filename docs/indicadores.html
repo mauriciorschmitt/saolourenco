@@ -83,16 +83,31 @@ button:hover{background:var(--water);color:var(--panel)}
 button:focus-visible,select:focus-visible,input:focus-visible{
   outline:2px solid var(--water);outline-offset:1px}
 .contagem{font-size:13px;color:var(--muted);margin:0 0 10px}
-.rolagem{overflow-x:auto;border:1px solid var(--line);background:var(--panel);
-  /* sombra à direita enquanto houver conteúdo fora da vista */
-  background-image:linear-gradient(to right,var(--panel),var(--panel)),
-    linear-gradient(to left,rgba(18,48,58,.10),rgba(18,48,58,0));
-  background-position:right center,right center;background-repeat:no-repeat;
-  background-size:100% 100%,22px 100%;background-attachment:local,scroll}
-.dica-rolagem{font-size:12px;color:var(--muted);margin:8px 0 0}
-td:first-child,th:first-child{position:sticky;left:0;background:var(--panel);
-  z-index:2;box-shadow:1px 0 0 var(--line)}
-thead th:first-child{z-index:3}
+.quadro{border:1px solid var(--line);background:var(--panel);overflow-x:auto}
+/* Em tela estreita as colunas de área saem da tabela; continuam
+   disponíveis ao abrir a linha, então nada se perde. */
+@media (max-width:820px){
+  thead th:nth-child(n+6), tbody tr.linha td:nth-child(n+6){display:none}
+  th,td{padding-left:8px;padding-right:8px}
+}
+@media (max-width:520px){
+  thead th:nth-child(4), tbody tr.linha td:nth-child(4){display:none}
+}
+tbody tr.linha{cursor:pointer}
+tbody tr.linha td:first-child::before{content:'\25B8';color:var(--muted);
+  display:inline-block;width:14px;transition:transform .15s}
+tbody tr.linha.aberta td:first-child::before{transform:rotate(90deg)}
+tr.detalhe td{background:rgba(42,107,140,.05);padding:14px 12px 16px 26px;
+  white-space:normal}
+.detalhe-grade{display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(178px,1fr));gap:12px 22px}
+.det .k{color:var(--muted);font-size:12px}
+.det .v{font-variant-numeric:tabular-nums;font-weight:500;font-size:14px}
+.det .z{color:var(--muted);font-size:12px;margin-left:6px}
+.det.alerta .v{color:var(--alert)} .det.atencao .v{color:var(--silt)}
+.det-extra{margin-top:14px;font-size:12.5px;color:var(--muted)}
+@media (prefers-reduced-motion:reduce){
+  tbody tr.linha td:first-child::before{transition:none}}
 table{width:100%;border-collapse:collapse;font-size:13.5px}
 th{text-align:left;font-weight:500;font-size:12px;color:var(--muted);
    padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap;
@@ -301,7 +316,7 @@ function montarGrafico(box, linhas, k){
   svg.addEventListener('touchend',sair);
 }
 
-let LINHAS=[], COLS=[], VISIVEIS=100, ORD={col:'data',dir:-1};
+let LINHAS=[], COLS=[], VISIVEIS=100, ORD={col:'data',dir:-1}, ABERTA=null;
 
 function filtrar(){
   const ano=document.getElementById('f-ano').value;
@@ -325,35 +340,80 @@ function filtrar(){
   });
 }
 
+const rotuloArea = c => c.replace('area_','').replace('_ha','')
+  .replace(/_/g,' ') + ' (ha)';
+const SIT = {ALERTA:'alerta', ATENCAO:'atenção', NORMAL:'normal',
+             SEM_REFERENCIA:'sem referência'};
+
+function detalhe(r, ncols){
+  const idx = Object.keys(GUIA).filter(k=>COLS.includes(k));
+  const cel = idx.map(k=>{
+    const st=r[k+'_status']||'', z=num(r[k+'_z']);
+    const cls = st==='ALERTA'?'alerta':st==='ATENCAO'?'atencao':'';
+    return `<div class="det ${cls}">
+      <div class="k">${GUIA[k].nome.split(' — ')[0]}</div>
+      <div><span class="v">${fmt(num(r[k]))}</span>${
+        z!==null?`<span class="z">escore ${z>0?'+':''}${fmt(z,1)}</span>`:''}</div>
+    </div>`;}).join('');
+  const conf = r[Object.keys(r).find(c=>c==='confianca')] || '';
+  const extras = [];
+  if(r.fracao_valida) extras.push(`área observada ${fmt(num(r.fracao_valida)*100,0)}%`);
+  if(r.pixels_validos) extras.push(`${r.pixels_validos} pixels válidos`);
+  const confirm = COLS.filter(c=>c.endsWith('_confirmado') && r[c]==='SIM')
+    .map(c=>GUIA[c.replace('_confirmado','')]?.nome.split(' — ')[0]).filter(Boolean);
+  if(confirm.length) extras.push('alerta confirmado em: '+confirm.join(', '));
+  return `<tr class="detalhe"><td colspan="${ncols}">
+    <div class="detalhe-grade">${cel}</div>
+    ${extras.length?`<p class="det-extra">${extras.join(' · ')}</p>`:''}
+  </td></tr>`;
+}
+
 function tabela(){
-  const dados=filtrar();
-  const mostra=dados.slice(0,VISIVEIS);
-  const idx=Object.keys(GUIA).filter(k=>COLS.includes(k));
-  const areas=COLS.filter(c=>c.startsWith('area_'));
-  const cols=['data','confianca',...idx,...areas];
-  const rot={data:'Data',confianca:'Confiança'};
-  idx.forEach(k=>rot[k]=GUIA[k].nome.split(' — ')[0]);
-  areas.forEach(c=>rot[c]=c.replace('area_','').replace('_ha','').replace(/_/g,' ')+' (ha)');
+  const dados = filtrar();
+  const mostra = dados.slice(0, VISIVEIS);
+  const k = document.getElementById('f-idx').value;
+  const areas = COLS.filter(c=>c.startsWith('area_'));
+
+  // Poucas colunas, escolhidas: a tabela cabe na tela e não precisa de
+  // rolagem lateral. O resto dos valores vive na linha expansível.
+  const cols = [
+    {c:'data', r:'Data'},
+    {c:'confianca', r:'Confiança'},
+    {c:k, r:'Valor'},
+    {c:k+'_z', r:'Escore'},
+    {c:k+'_status', r:'Situação'},
+    ...areas.map(a=>({c:a, r:rotuloArea(a)})),
+  ].filter(x=>x.c==='data' || x.c==='confianca' || COLS.includes(x.c));
 
   document.getElementById('contagem').textContent =
     `${dados.length} de ${LINHAS.length} passagens` +
-    (dados.length>mostra.length?` · exibindo as ${mostra.length} primeiras`:'');
+    (dados.length>mostra.length ? ` · exibindo as ${mostra.length} primeiras` : '');
 
   document.getElementById('tabela').innerHTML = `
-    <thead><tr>${cols.map(c=>
-      `<th data-c="${c}" class="${ORD.col===c?(ORD.dir>0?'asc':'desc'):''}">${rot[c]||c}</th>`
+    <thead><tr>${cols.map(x=>
+      `<th data-c="${x.c}" class="${ORD.col===x.c?(ORD.dir>0?'asc':'desc'):''}">${x.r}</th>`
     ).join('')}</tr></thead>
-    <tbody>${mostra.map(r=>`<tr>
-      <td class="num">${r.data}</td>
-      <td><span class="tag t-${r.confianca}">${(r.confianca||'').toLowerCase()}</span></td>
-      ${idx.map(k=>{const st=r[k+'_status'];
-        return `<td class="n num ${st?'s-'+st:''}">${fmt(num(r[k]))}</td>`;}).join('')}
-      ${areas.map(c=>`<td class="n num">${fmt(num(r[c]),1)}</td>`).join('')}
-    </tr>`).join('')}</tbody>`;
+    <tbody>${mostra.map(r=>{
+      const st=r[k+'_status']||'', z=num(r[k+'_z']);
+      const aberta = ABERTA===r.data;
+      return `<tr class="linha${aberta?' aberta':''}" data-d="${r.data}" tabindex="0">
+        <td class="num">${r.data}</td>
+        <td><span class="tag t-${r.confianca}">${(r.confianca||'').toLowerCase()}</span></td>
+        <td class="n num ${st?'s-'+st:''}">${fmt(num(r[k]))}</td>
+        <td class="n num">${z===null?'—':(z>0?'+':'')+fmt(z,1)}</td>
+        <td class="${st?'s-'+st:''}">${SIT[st]||'—'}</td>
+        ${areas.map(a=>`<td class="n num">${fmt(num(r[a]),1)}</td>`).join('')}
+      </tr>${aberta?detalhe(r, 12):''}`;
+    }).join('')}</tbody>`;
 
   document.querySelectorAll('#tabela th').forEach(th=>{
     th.onclick=()=>{const c=th.dataset.c;
       ORD = ORD.col===c ? {col:c,dir:-ORD.dir} : {col:c,dir:1}; tabela();};
+  });
+  document.querySelectorAll('#tabela tr.linha').forEach(tr=>{
+    const alterna=()=>{ABERTA = ABERTA===tr.dataset.d ? null : tr.dataset.d; tabela();};
+    tr.onclick=alterna;
+    tr.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();alterna();}};
   });
   document.getElementById('mais').style.display =
     dados.length>mostra.length ? 'inline-block' : 'none';
@@ -431,8 +491,9 @@ function exportar(){
     </div>`).join('')}
 
   <h2>Série completa</h2>
-  <p class="sub" style="margin-bottom:0">Clique num cabeçalho para ordenar.
-    Valores em vermelho ou âmbar indicam alerta e atenção naquele índice.</p>
+  <p class="sub" style="margin-bottom:0">Escolha o indicador em foco e clique
+    numa linha para abrir todos os valores daquela passagem. Os cabeçalhos
+    ordenam a tabela.</p>
   <div class="filtros">
     <div class="campo"><label for="f-ano">Ano</label>
       <select id="f-ano"><option value="todos">todos</option>
@@ -441,6 +502,8 @@ function exportar(){
       <select id="f-conf"><option value="todas">todas</option>
         <option value="ALTA">alta</option><option value="MEDIA">média</option>
         <option value="BAIXA">baixa</option></select></div>
+    <div class="campo"><label for="f-idx">Indicador em foco</label>
+      <select id="f-idx"></select></div>
     <div class="campo"><label for="f-sit">Situação</label>
       <select id="f-sit"><option value="todas">todas</option>
         <option value="alerta">com alerta</option>
@@ -448,9 +511,7 @@ function exportar(){
     <button id="btn-csv">Baixar seleção em CSV</button>
   </div>
   <p class="contagem" id="contagem"></p>
-  <div class="rolagem"><table id="tabela"></table></div>
-  <p class="dica-rolagem">A tabela rola na horizontal: há mais colunas à
-    direita. A coluna de data fica fixa.</p>
+  <div class="quadro"><table id="tabela"></table></div>
   <button class="mais" id="mais">Mostrar mais 100</button>
 
   <footer>
@@ -465,8 +526,12 @@ function exportar(){
     </ul>
   </footer>`;
 
-  ['f-ano','f-conf','f-sit'].forEach(id=>
-    document.getElementById(id).onchange=()=>{VISIVEIS=100;tabela();});
+  const selIdx=document.getElementById('f-idx');
+  selIdx.innerHTML = presentes.map(k=>
+    `<option value="${k}">${GUIA[k].nome.split(' — ')[0]}</option>`).join('');
+
+  ['f-ano','f-conf','f-sit','f-idx'].forEach(id=>
+    document.getElementById(id).onchange=()=>{VISIVEIS=100;ABERTA=null;tabela();});
   document.querySelectorAll('[data-graf]').forEach(box=>
     montarGrafico(box, LINHAS, box.dataset.graf));
   document.getElementById('btn-csv').onclick=exportar;
